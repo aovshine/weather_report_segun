@@ -1,0 +1,134 @@
+{
+  "_comment": [
+    "City list for the Environment and Climate Change Canada CityPage Weather pull.",
+    "Each entry needs: name (label used in output), province (2-letter MSC code),",
+    "site_code (ECCC site code, e.g. s0000458). 'expect' is optional and is used to",
+    "sanity-check that the feed really is the city you think it is - if the XML's own",
+    "location name does not contain this string the run logs a WARNING.",
+    "To add a city, find its site code in the MSC site list:",
+    "https://collaboration.cmc.ec.gc.ca/cmc/cmos/public_doc/msc-data/citypage-weather/site_list_en.geojson",
+    "or run: ./ca_weather_pull.py --discover ON  (lists every site code for a province)"
+  ],
+  "cities": [
+    {
+      "name": "Toronto",
+      "province": "ON",
+      "site_code": "s0000458",
+      "expect": "Toronto"
+    },
+    {
+      "name": "Montreal",
+      "province": "QC",
+      "site_code": "s0000635",
+      "expect": "Montr"
+    },
+    {
+      "name": "Vancouver",
+      "province": "BC",
+      "site_code": "s0000141",
+      "expect": "Vancouver"
+    },
+    {
+      "name": "Calgary",
+      "province": "AB",
+      "site_code": "s0000047",
+      "expect": "Calgary"
+    },
+    {
+      "name": "Edmonton",
+      "province": "AB",
+      "site_code": "s0000045",
+      "expect": "Edmonton"
+    },
+    {
+      "name": "Ottawa",
+      "province": "ON",
+      "site_code": "s0000430",
+      "expect": "Ottawa"
+    },
+    {
+      "name": "Winnipeg",
+      "province": "MB",
+      "site_code": "s0000193",
+      "expect": "Winnipeg"
+    },
+    {
+      "name": "Quebec City",
+      "province": "QC",
+      "site_code": "s0000620",
+      "expect": "Qu"
+    },
+    {
+      "name": "Hamilton",
+      "province": "ON",
+      "site_code": "s0000549",
+      "expect": "Hamilton"
+    },
+    {
+      "name": "Kitchener",
+      "province": "ON",
+      "site_code": "s0000573",
+      "expect": "Kitchener"
+    },
+    {
+      "name": "London",
+      "province": "ON",
+      "site_code": "s0000326",
+      "expect": "London"
+    },
+    {
+      "name": "Victoria",
+      "province": "BC",
+      "site_code": "s0000775",
+      "expect": "Victoria"
+    },
+    {
+      "name": "Halifax",
+      "province": "NS",
+      "site_code": "s0000318",
+      "expect": "Halifax"
+    },
+    {
+      "name": "Oshawa",
+      "province": "ON",
+      "site_code": "s0000707",
+      "expect": "Oshawa"
+    },
+    {
+      "name": "Windsor",
+      "province": "ON",
+      "site_code": "s0000646",
+      "expect": "Windsor"
+    },
+    {
+      "name": "Saskatoon",
+      "province": "SK",
+      "site_code": "s0000797",
+      "expect": "Saskatoon"
+    },
+    {
+      "name": "Regina",
+      "province": "SK",
+      "site_code": "s0000788",
+      "expect": "Regina"
+    },
+    {
+      "name": "St Johns",
+      "province": "NL",
+      "site_code": "s0000280",
+      "expect": "John"
+    },
+    {
+      "name": "Kelowna",
+      "province": "BC",
+      "site_code": "s0000592",
+      "expect": "Kelowna"
+    },
+    {
+      "name": "Barrie",
+      "province": "ON",
+      "site_code": "s0000415",
+      "expect": "Barrie"
+    }
+  ]
+}

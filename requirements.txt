@@ -1,0 +1,7 @@
+# ca_weather_pull.py dependencies
+# Everything else it uses is in the Python 3.9+ standard library.
+requests>=2.31,<3.0
+
+# On a minimal Ubuntu image the zoneinfo database may not be installed.
+# Either `apt-get install -y tzdata` (preferred) or uncomment the line below.
+# tzdata>=2024.1
