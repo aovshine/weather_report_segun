@@ -101,7 +101,103 @@ Outbound HTTPS to `dd.weather.gc.ca` (and, for `--discover`,
 `collaboration.cmc.ec.gc.ca`) must be allowed through the firewall/proxy. If the
 server uses a proxy, set `HTTPS_PROXY` in the Jenkins job environment.
 
-## Jenkins job
+## Running it with Ansible (recommended on numerictraining)
+
+`weather_pull.yml` runs the whole thing through Ansible, which fits a Jenkins
+server whose other jobs are already Ansible freestyle jobs. It needs no Pipeline
+or Git plugin.
+
+```bash
+ansible-playbook -i weather_hosts.ini weather_pull.yml
+```
+
+It runs unprivileged (`become: false`) against `localhost` with a local
+connection — no SSH, no managed host. Everything it needs is checked first, and
+each check fails with the exact command that fixes it:
+
+| Preflight check | Fails with |
+|---|---|
+| Source files present in `src_dir` | which files are missing, and how to point at the checkout |
+| `python3` present and ≥ 3.9 | `sudo apt-get install -y python3` |
+| `venv` / `ensurepip` importable | `sudo apt-get install -y python3-venv` |
+| Timezone database resolves | `sudo apt-get install -y tzdata` |
+| `dd.weather.gc.ca` reachable | firewall, proxy, and DNS steps, with the exact error |
+| Output directory writable | the `mkdir` + `chown` to run once as an admin |
+
+The network probe is the one that earns its keep. It tries `requests` first and
+falls back to stdlib `urllib`, so a proxy that only one of them is configured for
+still passes. Without it, a blocked egress path means the collector spends about
+eight minutes retrying twenty cities before failing; with it, the run stops in
+seconds with a message that names the cause.
+
+After preflight it copies the four runtime files out of the repo into
+`~/ca-weather`, builds the virtualenv, runs the offline tests, runs the
+collector, then prints a summary, any active weather alerts, and any cities that
+failed.
+
+### Variables
+
+Override with `-e`, or in the Jenkins Ansible plugin's **Extra Variables**:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `src_dir` | the playbook's own directory | where the repo files are read from |
+| `app_dir` | `~/ca-weather` | where the runtime copy and venv live |
+| `out_dir` | `/var/lib/ca-weather` | where dated output folders are written |
+| `tz` | `America/Winnipeg` | timezone for the run date and folder name |
+| `cities` | *(blank)* | comma-separated subset; blank = all 20 |
+| `retain_days` | `90` | prune dated folders older than this; `0` keeps all |
+| `min_success_pct` | `80` | below this share of cities the collector fails |
+| `fail_on_partial` | `false` | set `true` to fail the build on a partial pull |
+| `run_tests` | `true` | set `false` to skip the offline parser tests |
+| `skip_net_check` | `false` | set `true` to bypass the reachability probe |
+
+### One-time setup on the server
+
+The playbook is deliberately unprivileged, so the output directory is prepared
+once by an admin:
+
+```bash
+sudo mkdir -p /var/lib/ca-weather
+sudo chown jenkins:jenkins /var/lib/ca-weather      # or segun:segun, whoever runs the job
+```
+
+If you'd rather avoid that entirely, point it somewhere already writable:
+
+```bash
+ansible-playbook -i weather_hosts.ini weather_pull.yml -e out_dir=$HOME/ca-weather-data
+```
+
+### Jenkins freestyle job
+
+1. **New Item → Freestyle project**, name it `canada-weather-daily`.
+2. **Source Code Management:** `None` if the repo is already checked out on disk
+   (then set `src_dir` below), or `Git` if you want Jenkins to pull it.
+3. **Build Triggers → Build periodically:**
+
+   ```
+   TZ=America/Winnipeg
+   30 6 * * *
+   ```
+
+4. **Build → Add build step → Invoke Ansible Playbook**
+   - **Playbook path:** `weather_pull.yml`, or the absolute path if SCM is None,
+     e.g. `/home/segun/weather_report_segun/weather_pull.yml`
+   - **Inventory:** *File or host list* → `weather_hosts.ini` (absolute path if
+     SCM is None), or *Inline content* → `localhost ansible_connection=local`
+   - **Credentials:** leave empty — this runs locally, no SSH
+   - **Extra Variables:** add `src_dir` pointing at the checkout if the playbook
+     path is absolute
+5. **Post-build Actions → Archive the artifacts:** skip this if `out_dir` is
+   outside the workspace; read the files from `/var/lib/ca-weather` instead.
+
+Unlike the Pipeline version, a freestyle job has no UNSTABLE state of its own. A
+partial pull (exit 2) succeeds by default and prints `WEATHER_PULL_PARTIAL` in
+the console. To surface that, either install the **Text Finder** plugin and mark
+the build unstable on that string, or set `fail_on_partial=true` to make it a
+hard failure.
+
+## Jenkins job (Pipeline alternative)
 
 1. **New Item → Pipeline** (or Multibranch if the repo has branches).
 2. **Pipeline script from SCM** → Git → your repo → script path `Jenkinsfile`.

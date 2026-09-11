@@ -1,0 +1,309 @@
+---
+# weather_pull.yml — daily Canadian city weather pull, run via Ansible.
+#
+# Designed to be driven by a Jenkins freestyle job using the Ansible plugin,
+# the same way the existing patching jobs on this server work.
+#
+#   ansible-playbook -i weather_hosts.ini weather_pull.yml
+#
+# Runs unprivileged (become: false). Every prerequisite is checked up front and
+# fails with the exact command needed to fix it, rather than dying halfway
+# through with a stack trace.
+#
+# Useful overrides (-e or the Jenkins plugin's "Extra Variables"):
+#   out_dir=/var/lib/ca-weather     where dated output folders are written
+#   cities=Toronto,Winnipeg         subset instead of all 20
+#   retain_days=90                  0 keeps every run forever
+#   fail_on_partial=true            treat a partial pull as a build failure
+#   run_tests=false                 skip the offline parser tests
+#   skip_net_check=true             skip the datamart reachability preflight
+
+- name: Daily Canadian city weather pull
+  hosts: weather_servers
+  gather_facts: true
+  become: false
+
+  vars:
+    # Where the repo is. Defaults to wherever this playbook lives, so it works
+    # from a Jenkins workspace checkout or from a plain folder on disk.
+    src_dir: "{{ playbook_dir }}"
+
+    app_dir: "{{ ansible_env.HOME }}/ca-weather"
+    venv_dir: "{{ app_dir }}/.venv"
+    out_dir: /var/lib/ca-weather
+
+    tz: America/Winnipeg
+    retain_days: 90
+    min_success_pct: 80
+    cities: ""                    # blank = every city in cities.json
+    lang: en
+
+    run_tests: true
+    fail_on_partial: false
+    skip_net_check: false
+
+    datamart_probe: https://dd.weather.gc.ca/today/citypage_weather/MB/
+
+    runtime_files:
+      - ca_weather_pull.py
+      - cities.json
+      - requirements.txt
+      - test_parse.py
+
+  tasks:
+
+    # ------------------------------------------------------------------ #
+    # Preflight — fail early, fail with the fix
+    # ------------------------------------------------------------------ #
+
+    - name: Preflight | Confirm the source files are present
+      ansible.builtin.stat:
+        path: "{{ src_dir }}/{{ item }}"
+      register: src_stat
+      loop: "{{ runtime_files }}"
+
+    - name: Preflight | Fail if any source file is missing
+      ansible.builtin.fail:
+        msg: |
+          Missing from {{ src_dir }}: {{ missing | join(', ') }}
+
+          The playbook copies these out of the repo. If Jenkins is running it,
+          make sure the job checks the repo out into its workspace, or point
+          src_dir at the checkout:
+            -e src_dir=/home/segun/weather_report_segun
+      vars:
+        missing: "{{ src_stat.results | rejectattr('stat.exists') | map(attribute='item') | list }}"
+      when: missing | length > 0
+
+    - name: Preflight | Locate python3
+      ansible.builtin.command: python3 --version
+      register: py_version
+      changed_when: false
+      failed_when: false
+      check_mode: false          # read-only; must run even under --check
+
+    - name: Preflight | Fail if python3 is missing
+      ansible.builtin.fail:
+        msg: |
+          python3 was not found on {{ inventory_hostname }}.
+          Fix:  sudo apt-get install -y python3
+      when: py_version.rc != 0
+
+    - name: Preflight | Confirm python3 is 3.9 or newer
+      ansible.builtin.fail:
+        msg: |
+          ca_weather_pull.py needs Python 3.9+ (it uses zoneinfo).
+          Found: {{ py_version.stdout | default('nothing') | trim }}
+      vars:
+        py_ver: >-
+          {{ py_version.stdout | default('') | regex_search('[0-9]+\.[0-9]+\.[0-9]+')
+             | default('0.0.0', true) }}
+      when: py_ver is version('3.9', '<')
+
+    - name: Preflight | Check the venv and ensurepip modules
+      ansible.builtin.command: python3 -c "import venv, ensurepip"
+      register: venv_check
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Preflight | Fail if python3-venv is missing
+      ansible.builtin.fail:
+        msg: |
+          python3 is present but the venv/ensurepip modules are not, so the
+          virtualenv cannot be created.
+          Fix:  sudo apt-get install -y python3-venv
+      when: venv_check.rc != 0
+
+    - name: Preflight | Check the timezone database
+      ansible.builtin.command: >-
+        python3 -c "from zoneinfo import ZoneInfo; ZoneInfo('{{ tz }}')"
+      register: tz_check
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Preflight | Fail if the timezone database is missing
+      ansible.builtin.fail:
+        msg: |
+          Timezone '{{ tz }}' could not be resolved, so dated output folders
+          would land on the wrong day near midnight.
+          Fix:  sudo apt-get install -y tzdata
+      when: tz_check.rc != 0
+
+    # Probed with python3 + urllib rather than the uri module on purpose: it is
+    # the same stack, and honours the same https_proxy / CA settings, that
+    # ca_weather_pull.py will use. A green probe therefore means the real pull
+    # can get out too.
+    - name: Preflight | Confirm the Environment Canada datamart is reachable
+      ansible.builtin.command:
+        argv:
+          - python3
+          - -c
+          - |
+            import sys
+            url, errors = sys.argv[1], []
+            try:                       # same library the collector uses
+                import requests
+                print(requests.get(url, timeout=25).status_code)
+                sys.exit(0)
+            except Exception as exc:
+                errors.append(f"requests: {type(exc).__name__}: {exc}")
+            try:                       # stdlib fallback, different TLS/proxy config
+                import urllib.request
+                with urllib.request.urlopen(url, timeout=25) as response:
+                    print(response.status)
+                sys.exit(0)
+            except Exception as exc:
+                errors.append(f"urllib:   {type(exc).__name__}: {exc}")
+            print("\n".join(errors), file=sys.stderr)
+            sys.exit(1)
+          - "{{ datamart_probe }}"
+      register: net_check
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      when: not (skip_net_check | bool)
+
+    - name: Preflight | Fail if the datamart is unreachable
+      ansible.builtin.fail:
+        msg: |
+          Cannot reach {{ datamart_probe }}
+          {{ net_check.stderr | default('no response') | trim }}
+
+          This job pulls from the internet, so outbound HTTPS to
+          dd.weather.gc.ca must be permitted. Check in this order:
+            1. Firewall / egress rules for this host on port 443
+            2. If the host uses a proxy, export it in the Jenkins job
+               environment:  https_proxy=http://proxy.internal:3128
+            3. DNS:  getent hosts dd.weather.gc.ca
+            4. Verify by hand as the job's user:
+                 curl -sSI {{ datamart_probe }} | head -1
+      when:
+        - not (skip_net_check | bool)
+        - net_check.rc | default(1) != 0
+
+    # ------------------------------------------------------------------ #
+    # Deploy — copy the runtime files out of the workspace
+    # ------------------------------------------------------------------ #
+
+    - name: Deploy | Create the application directory
+      ansible.builtin.file:
+        path: "{{ app_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Deploy | Copy the runtime files
+      ansible.builtin.copy:
+        src: "{{ src_dir }}/{{ item }}"
+        dest: "{{ app_dir }}/{{ item }}"
+        mode: "{{ '0755' if item.endswith('.py') else '0644' }}"
+      loop: "{{ runtime_files }}"
+
+    - name: Deploy | Create the output directory
+      ansible.builtin.file:
+        path: "{{ out_dir }}"
+        state: directory
+        mode: "0755"
+      register: out_dir_result
+      failed_when: false
+
+    - name: Deploy | Fail if the output directory is not writable
+      ansible.builtin.fail:
+        msg: |
+          Cannot create or write {{ out_dir }} as user {{ ansible_user_id }}.
+
+          This playbook runs unprivileged, so the directory has to be prepared
+          once by an admin:
+            sudo mkdir -p {{ out_dir }}
+            sudo chown {{ ansible_user_id }}:{{ ansible_user_id }} {{ out_dir }}
+
+          Or point the job somewhere already writable:
+            -e out_dir={{ ansible_env.HOME }}/ca-weather-data
+      when: out_dir_result.failed | default(false)
+
+    - name: Deploy | Build the virtualenv and install requirements
+      ansible.builtin.pip:
+        requirements: "{{ app_dir }}/requirements.txt"
+        virtualenv: "{{ venv_dir }}"
+        virtualenv_command: python3 -m venv
+
+    # ------------------------------------------------------------------ #
+    # Test and run
+    # ------------------------------------------------------------------ #
+
+    - name: Run | Offline parser tests
+      ansible.builtin.command:
+        cmd: "{{ venv_dir }}/bin/python -m unittest test_parse"
+        chdir: "{{ app_dir }}"
+      register: unit_tests
+      changed_when: false
+      when: run_tests | bool
+
+    - name: Run | Pull the weather
+      ansible.builtin.command:
+        cmd: >-
+          {{ venv_dir }}/bin/python ca_weather_pull.py
+          --outdir {{ out_dir }}
+          --timezone {{ tz }}
+          --lang {{ lang }}
+          --retain-days {{ retain_days }}
+          --min-success-pct {{ min_success_pct }}
+          {{ ('--cities ' + cities) if (cities | length > 0) else '' }}
+        chdir: "{{ app_dir }}"
+      register: pull
+      changed_when: pull.rc in [0, 2]
+      failed_when: >-
+        pull.rc not in [0, 2]
+        or (pull.rc == 2 and (fail_on_partial | bool))
+
+    - name: Run | Collector log
+      ansible.builtin.debug:
+        var: pull.stdout_lines
+
+    - name: Run | Flag a partial pull
+      ansible.builtin.debug:
+        msg: >-
+          WEATHER_PULL_PARTIAL — some cities did not return data. The run stayed
+          above the {{ min_success_pct }}% threshold, so the output was written.
+          See the log above for which cities failed.
+      when: pull.rc == 2
+
+    # ------------------------------------------------------------------ #
+    # Report
+    # ------------------------------------------------------------------ #
+
+    - name: Report | Read the run summary
+      ansible.builtin.slurp:
+        src: "{{ out_dir }}/latest.json"
+      register: latest_raw
+
+    - name: Report | Parse the run summary
+      ansible.builtin.set_fact:
+        latest: "{{ latest_raw.content | b64decode | from_json }}"
+
+    - name: Report | Run summary
+      ansible.builtin.debug:
+        msg: >-
+          {{ latest.ok_count }}/{{ latest.city_count }} cities collected
+          for {{ latest.run_date }} —
+          {{ latest.cities | map(attribute='alerts') | map('length') | sum }}
+          active weather alert(s) —
+          written to {{ out_dir }}
+
+    - name: Report | Active weather alerts
+      ansible.builtin.debug:
+        msg: >-
+          {{ item.city }} ({{ item.province }}):
+          {{ item.alerts | map(attribute='description') | join(', ') }}
+      loop: "{{ latest.cities | selectattr('alerts') | list }}"
+      loop_control:
+        label: "{{ item.city }}"
+
+    - name: Report | Cities that failed
+      ansible.builtin.debug:
+        msg: >-
+          {{ item.city }} ({{ item.site_code }}): {{ item.error }}
+      loop: "{{ latest.cities | selectattr('status', 'equalto', 'error') | list }}"
+      loop_control:
+        label: "{{ item.city }}"
