@@ -200,27 +200,54 @@
         mode: "{{ '0755' if item.endswith('.py') else '0644' }}"
       loop: "{{ runtime_files }}"
 
-    - name: Deploy | Create the output directory
+    # Creating the directory is not proof we can write into it. If it already
+    # exists but is owned by someone else, the file module reports "ok" and the
+    # collector only discovers the problem at the very end, after doing all the
+    # work. stat's own `writeable` flag answers the real question: can the user
+    # running this play write here?
+    - name: Deploy | Create the output directory if it is missing
       ansible.builtin.file:
         path: "{{ out_dir }}"
         state: directory
         mode: "0755"
       register: out_dir_result
-      failed_when: false
+      ignore_errors: true
+
+    - name: Deploy | Inspect the output directory
+      ansible.builtin.stat:
+        path: "{{ out_dir }}"
+      register: out_dir_stat
 
     - name: Deploy | Fail if the output directory is not writable
       ansible.builtin.fail:
         msg: |
-          Cannot create or write {{ out_dir }} as user {{ ansible_user_id }}.
+          {{ out_dir }} is not writable by {{ ansible_user_id }}.
+          {% if out_dir_stat.stat.exists %}
+          It exists, owned by {{ out_dir_stat.stat.pw_name }}:{{ out_dir_stat.stat.gr_name }},
+          mode {{ out_dir_stat.stat.mode }} — and this play is running as {{ ansible_user_id }}.
+          {% else %}
+          It does not exist and could not be created.
+          {% endif %}
 
-          This playbook runs unprivileged, so the directory has to be prepared
-          once by an admin:
+          This playbook runs unprivileged, so an admin prepares the directory
+          once, owned by whoever runs the job. Jenkins runs as 'jenkins':
             sudo mkdir -p {{ out_dir }}
-            sudo chown {{ ansible_user_id }}:{{ ansible_user_id }} {{ out_dir }}
+            sudo chown jenkins:jenkins {{ out_dir }}
 
-          Or point the job somewhere already writable:
+          Then test as that same user, not as yourself:
+            sudo -u jenkins ansible-playbook -i weather_hosts.ini weather_pull.yml
+
+          To let both jenkins and your own account write to it:
+            sudo chown jenkins:jenkins {{ out_dir }}
+            sudo chmod 2775 {{ out_dir }}
+            sudo usermod -aG jenkins {{ ansible_user_id }}    # log out and back in
+
+          Or just send the output somewhere you already own:
             -e out_dir={{ ansible_env.HOME }}/ca-weather-data
-      when: out_dir_result.failed | default(false)
+      when: >-
+        not out_dir_stat.stat.exists
+        or not (out_dir_stat.stat.writeable
+                | default(out_dir_stat.stat.writable | default(false)))
 
     - name: Deploy | Build the virtualenv and install requirements
       ansible.builtin.pip:
