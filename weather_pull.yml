@@ -42,6 +42,13 @@
     fail_on_partial: false
     skip_net_check: false
 
+    # Dashboard. Under Jenkins this lands in the job workspace so the HTML
+    # Publisher plugin can pick it up as the report directory "dashboard";
+    # run by hand it lands beside the data in out_dir.
+    build_dashboard: true
+    dashboard_days: 30
+    dashboard_dir: "{{ lookup('env', 'WORKSPACE') | default(out_dir, true) }}/dashboard"
+
     datamart_probe: https://dd.weather.gc.ca/today/citypage_weather/MB/
 
     runtime_files:
@@ -49,6 +56,7 @@
       - cities.json
       - requirements.txt
       - test_parse.py
+      - build_dashboard.py
 
   tasks:
 
@@ -334,3 +342,24 @@
       loop: "{{ latest.cities | selectattr('status', 'equalto', 'error') | list }}"
       loop_control:
         label: "{{ item.city }}"
+
+    # ------------------------------------------------------------------ #
+    # Dashboard
+    # ------------------------------------------------------------------ #
+
+    - name: Dashboard | Render the HTML dashboard
+      ansible.builtin.command:
+        cmd: >-
+          {{ venv_dir }}/bin/python build_dashboard.py
+          --outdir {{ out_dir }}
+          --dest {{ dashboard_dir }}
+          --days {{ dashboard_days }}
+        chdir: "{{ app_dir }}"
+      register: dashboard
+      changed_when: true
+      when: build_dashboard | bool
+
+    - name: Dashboard | Where it went
+      ansible.builtin.debug:
+        var: dashboard.stdout_lines
+      when: build_dashboard | bool

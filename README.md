@@ -197,6 +197,82 @@ the console. To surface that, either install the **Text Finder** plugin and mark
 the build unstable on that string, or set `fail_on_partial=true` to make it a
 hard failure.
 
+## Browser dashboard
+
+`build_dashboard.py` renders the run as a static HTML page — stat tiles, active
+weather alerts, a full current-conditions table, and small-multiple temperature
+sparklines across the retained history. The playbook runs it automatically after
+each pull (`build_dashboard: true`).
+
+```bash
+./build_dashboard.py --outdir /var/lib/ca-weather --dest ./out --days 30
+```
+
+Standard library only — no extra dependencies.
+
+### Publishing it from Jenkins
+
+1. **Manage Jenkins → Plugins** → install **HTML Publisher**.
+2. In the job: **Post-build Actions → Publish HTML reports**
+   - **HTML directory to archive:** `dashboard`
+   - **Index page[s]:** `index.html`
+   - **Report title:** `Weather Dashboard`
+   - Tick **Keep past HTML reports** so each build keeps its own snapshot.
+3. Build. A **Weather Dashboard** link appears on the job and on every build page.
+
+Under Jenkins the playbook writes the dashboard to `$WORKSPACE/dashboard`, which
+is why the report directory is just `dashboard`. Run by hand with no `WORKSPACE`
+set, it goes to `<out_dir>/dashboard` instead.
+
+### The CSP caveat
+
+Jenkins serves published HTML under a restrictive Content-Security-Policy:
+
+```
+sandbox; default-src 'none'; img-src 'self'; style-src 'self';
+```
+
+The dashboard is built for this deliberately: **no JavaScript anywhere**, no
+`<style>` block, no `style=""` attributes. Styling lives in `dashboard.css`
+loaded as a same-origin stylesheet, and the charts are inline `<svg>` shapes
+coloured through CSS classes. The trade-off is no hover tooltips and no
+click-to-sort — the table *is* the data view, which is why it carries every value
+rather than relying on the charts.
+
+Some Jenkins versions apply that `sandbox` directive strictly enough to block
+even the same-origin stylesheet. If the report opens as readable-but-unstyled
+plain HTML, that's what happened. The page still works — semantic tables, so
+nothing is lost but the styling. To fix it, relax the policy in
+**Manage Jenkins → Script Console**:
+
+```groovy
+System.setProperty("hudson.model.DirectoryBrowserSupport.CSP",
+  "sandbox allow-same-origin; default-src 'none'; img-src 'self'; style-src 'self' 'unsafe-inline';")
+```
+
+That lasts until Jenkins restarts. To persist it, add to `JAVA_ARGS` in
+`/etc/default/jenkins` (or the `Environment=` line in the systemd unit):
+
+```
+-Dhudson.model.DirectoryBrowserSupport.CSP="sandbox allow-same-origin; default-src 'none'; img-src 'self'; style-src 'self' 'unsafe-inline';"
+```
+
+This is a real security decision — it loosens the sandbox for *all* published
+HTML on that controller, not just this job. It stops short of allowing scripts,
+which is the setting that actually matters. Check whether the default works
+first; only change it if the page comes out unstyled.
+
+### Dashboard variables
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `build_dashboard` | `true` | set `false` to skip rendering |
+| `dashboard_days` | `30` | how many days of history to chart |
+| `dashboard_dir` | `$WORKSPACE/dashboard`, else `<out_dir>/dashboard` | where the HTML is written |
+
+Trend charts need at least two days of history. Before that the section shows a
+short note instead — expected on day one, gone by day two.
+
 ## Jenkins job (Pipeline alternative)
 
 1. **New Item → Pipeline** (or Multibranch if the repo has branches).
