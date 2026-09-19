@@ -1,19 +1,10 @@
-- name: Copy and run block IP script
+- name: Copy and run Weather Report
   hosts: all
   become: yes
 
   tasks:
     - name: Copy the script
       copy:
-        src: "{{ playbook_dir }}/block_ip.sh"
-        dest: /tmp/block_ip.sh
+        src: "{{ playbook_dir }}/Final_Report_Capstone_Project.csv"
+        dest: /tmp/Final_Report_Capstone_Project.csv
         mode: '0755'
-
-    - name: Copy the block list file
-      copy:
-        src: "{{ playbook_dir }}/TOR_IP_block_list.txt"
-        dest: /tmp/ip_block_list.txt
-        mode: '0644'
-
-    - name: Execute the script
-      shell: /tmp/block_ip.sh
